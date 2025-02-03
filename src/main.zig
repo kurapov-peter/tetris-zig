@@ -36,6 +36,8 @@ const expect = std.testing.expect;
 // The game state also keeps track of the current tetromino and the next tetromino.
 // The game can be in one of three states: playing, paused, or game over.
 
+const DebugMode = false;
+
 const GameStateEnum = enum {
     playing,
     paused,
@@ -80,6 +82,14 @@ const GameState = struct {
         // defer self.keys.deinit();
         // defer _ = gpa.deinit();
         self.state = GameStateEnum.quit;
+    }
+
+    pub fn updateScore(self: *GameState, lines_cleared: u32) void {
+        self.lines += lines_cleared;
+        self.score += lines_cleared * 100;
+        if (self.lines % 100 == 0 and self.lines != 0 and self.level < 20) {
+            self.level += 1;
+        }
     }
 
     fn generateTetromino(self: *GameState) Tetromino {
@@ -266,7 +276,7 @@ fn printShapeAsBitMatrix(shape: u16) void {
 }
 
 const BoardWidth = 20;
-const BoardHeight = 20;
+const BoardHeight = 26;
 const InvisibleRows = 4;
 const InvisibleCols = 4;
 
@@ -279,7 +289,7 @@ const Board = struct {
     cells: [BoardHeight][BoardWidth]Color,
 
     // Commit the tetromino to the board
-    pub fn landTetromino(self: *Board, tetromino: Tetromino) void {
+    pub fn landTetromino(self: *Board, tetromino: Tetromino) u32 {
         for (0..4) |row_idx| {
             for (0..4) |col_idx| {
                 const pos = .{ .x = tetromino.pos.x + row_idx, .y = tetromino.pos.y + col_idx };
@@ -288,7 +298,7 @@ const Board = struct {
                 }
             }
         }
-        self.clearFilledLines();
+        return self.clearFilledLines();
     }
 
     pub fn canPutTetromino(self: *Board, tetromino: Tetromino) bool {
@@ -326,15 +336,15 @@ const Board = struct {
         }
     }
 
-    pub fn isCellInvisible(_: *Board, pos: Position) bool {
+    pub fn isCellInvisible(_: *const Board, pos: Position) bool {
         return pos.x < InvisibleCols or pos.x >= BoardHeight - InvisibleRows or pos.y < InvisibleRows or pos.y >= BoardWidth - InvisibleRows;
     }
 
-    pub fn isCellVisible(self: *Board, pos: Position) bool {
+    pub fn isCellVisible(self: *const Board, pos: Position) bool {
         return !isCellInvisible(self, pos);
     }
 
-    pub fn dump(self: *Board, printInvisible: bool) void {
+    pub fn dump(self: *const Board, printInvisible: bool) void {
         for (self.cells, 0..) |row, row_idx| {
             for (row, 0..) |cell, col_idx| {
                 if (printInvisible or isCellVisible(self, .{ .x = @intCast(row_idx), .y = @intCast(col_idx) })) {
@@ -345,7 +355,7 @@ const Board = struct {
         }
     }
 
-    pub fn checksum(self: *Board) u32 {
+    pub fn checksum(self: *const Board) u32 {
         var local_checksum: u32 = 0;
         for (self.cells) |row| {
             for (row) |cell| {
@@ -359,7 +369,8 @@ const Board = struct {
         return self.cells[pos.x][pos.y] == Color.empty and isCellVisible(self, pos);
     }
 
-    fn clearFilledLines(self: *Board) void {
+    fn clearFilledLines(self: *Board) u32 {
+        var lines_cleared: u32 = 0;
         for (0..BoardHeight) |row_idx| {
             var filled = true;
             const invisible_row = row_idx < InvisibleRows or row_idx >= BoardHeight - InvisibleRows;
@@ -375,6 +386,7 @@ const Board = struct {
             }
             if (filled) {
                 std.log.info("Clearing line {}", .{row_idx});
+                lines_cleared += 1;
                 for (0..BoardWidth) |col_idx| {
                     self.cells[row_idx][col_idx] = Color.empty;
                 }
@@ -391,13 +403,34 @@ const Board = struct {
         }
 
         self._clear(false);
+        return lines_cleared;
     }
 };
+
+fn u32ToString(value: u32, allocator: std.mem.Allocator) []const u8 {
+    const result = std.fmt.allocPrint(allocator, "{d}", .{value}) catch @panic("Out of memory");
+    return result;
+}
+
+fn concat2(allocator: std.mem.Allocator, s1: []const u8, s2: []const u8) []const u8 {
+    const result = allocator.alloc(u8, s1.len + s2.len) catch @panic("Out of memory");
+    @memcpy(result[0..s1.len], s1);
+    @memcpy(result[s1.len..], s2);
+    return result;
+}
 
 const Renderer = struct {
     renderer: *sdl.SDL_Renderer = undefined,
     window: *sdl.SDL_Window = undefined,
     debug: bool = false,
+    arena: std.heap.ArenaAllocator = undefined,
+    font: *sdl.TTF_Font = undefined,
+
+    const cell_width = 25;
+    const cell_height = 25;
+
+    const hint_label_pos = Position{ .x = 1, .y = BoardWidth + (InvisibleCols * @as(i32, @intFromBool(DebugMode))) };
+    const hint_pos = Position{ .x = 3, .y = BoardWidth + (InvisibleCols * @as(i32, @intFromBool(DebugMode))) };
 
     pub fn init(self: *Renderer, debug: bool) void {
         if (sdl.SDL_Init(sdl.SDL_INIT_VIDEO | sdl.SDL_INIT_TIMER) != 0) {
@@ -412,7 +445,7 @@ const Renderer = struct {
             return;
         }
 
-        self.window = sdl.SDL_CreateWindow("Tetris", sdl.SDL_WINDOWPOS_CENTERED, sdl.SDL_WINDOWPOS_CENTERED, 800, 600, sdl.SDL_WINDOW_SHOWN) orelse {
+        self.window = sdl.SDL_CreateWindow("Tetris", sdl.SDL_WINDOWPOS_CENTERED, sdl.SDL_WINDOWPOS_CENTERED, 1200, 800, sdl.SDL_WINDOW_SHOWN) orelse {
             std.log.err("Failed to create window: {*}\n", .{sdl.SDL_GetError()});
             sdl.SDL_Quit();
             return;
@@ -425,16 +458,33 @@ const Renderer = struct {
             return;
         };
 
+        self.arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        const alloc = self.arena.allocator();
+
+        const cwd: []u8 = std.fs.cwd().realpathAlloc(alloc, ".") catch @panic("Out of memory");
+        defer alloc.free(cwd);
+
+        const paths = &[_][]const u8{ cwd, "assets", "font.ttf" };
+        const path = std.fs.path.join(alloc, paths) catch @panic("Out of memory");
+        std.log.info("path: {s}", .{path});
+
+        self.font = sdl.TTF_OpenFont(path.ptr, 24) orelse {
+            std.log.err("Failed to load font: {*}\n", .{sdl.SDL_GetError()});
+            return;
+        };
+
         self.debug = debug;
     }
 
     pub fn drawBoard(self: *Renderer, board: Board) void {
-        const cell_width = 20;
-        const cell_height = 20;
         const boardColor = getRGB(Color.white);
+        const draw_invisible = self.debug;
 
         for (0..BoardHeight) |row_idx| {
             for (0..BoardWidth) |col_idx| {
+                if (!draw_invisible and board.isCellInvisible(.{ .x = row_idx, .y = col_idx })) {
+                    continue;
+                }
                 const cell = board.cells[row_idx][col_idx];
                 const color = getRGB(cell);
                 const rect = sdl.SDL_Rect{ .x = @intCast(col_idx * cell_width), .y = @intCast(row_idx * cell_height), .w = @intCast(cell_width), .h = @intCast(cell_height) };
@@ -447,9 +497,6 @@ const Renderer = struct {
     }
 
     pub fn drawTetromino(self: *Renderer, tetromino: Tetromino) void {
-        const cell_width = 20;
-        const cell_height = 20;
-
         for (0..4) |row_idx| {
             for (0..4) |col_idx| {
                 const cell = tetromino.shape[tetromino.rotation][row_idx][col_idx];
@@ -469,28 +516,8 @@ const Renderer = struct {
         _ = sdl.SDL_SetRenderDrawColor(self.renderer, color.r, color.g, color.b, 255);
         _ = sdl.SDL_RenderFillRect(self.renderer, &rect);
 
-        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-        defer arena.deinit();
-        const alloc = arena.allocator();
-
-        std.log.info("cwd: {s}", .{
-            std.fs.cwd().realpathAlloc(alloc, ".") catch @panic("Out of memory"),
-        });
-
-        const cwd: []u8 = std.fs.cwd().realpathAlloc(alloc, ".") catch @panic("Out of memory");
-        defer alloc.free(cwd);
-
-        const paths = &[_][]const u8{ cwd, "assets", "font.ttf" };
-        const path = std.fs.path.join(alloc, paths) catch @panic("Out of memory");
-        std.log.info("path: {s}", .{path});
-
-        const font = sdl.TTF_OpenFont(path.ptr, 24) orelse {
-            std.log.err("Failed to load font: {*}\n", .{sdl.SDL_GetError()});
-            return;
-        };
-
         const text = "Game Over";
-        const rendered_text = sdl.TTF_RenderText_Solid(font, text, sdl.SDL_Color{ .r = 255, .g = 255, .b = 255, .a = 255 }) orelse {
+        const rendered_text = sdl.TTF_RenderText_Solid(self.font, text, sdl.SDL_Color{ .r = 255, .g = 255, .b = 255, .a = 255 }) orelse {
             std.log.err("Failed to render text: {*}\n", .{sdl.SDL_GetError()});
             return;
         };
@@ -508,11 +535,105 @@ const Renderer = struct {
         _ = sdl.SDL_FreeSurface(rendered_text);
     }
 
+    pub fn drawNextTetrominoHint(self: *Renderer, tetromino: Tetromino) void {
+        const hint_color = getRGB(Color.white);
+        const hint_rect: sdl.SDL_Rect = sdl.SDL_Rect{ .x = @intCast(hint_label_pos.y * cell_width), .y = @intCast(hint_label_pos.x * cell_height), .w = @intCast(cell_width * 4), .h = @intCast(cell_height) };
+        const hint_text = "Next";
+        const rendered_hint_text = sdl.TTF_RenderText_Solid(self.font, hint_text, sdl.SDL_Color{ .r = hint_color.r, .g = hint_color.g, .b = hint_color.b, .a = 255 }) orelse {
+            std.log.err("Failed to render text: {*}\n", .{sdl.SDL_GetError()});
+            return;
+        };
+
+        const hint_texture = sdl.SDL_CreateTextureFromSurface(self.renderer, rendered_hint_text) orelse {
+            std.log.err("Failed to create texture: {*}\n", .{sdl.SDL_GetError()});
+            return;
+        };
+
+        _ = sdl.SDL_RenderCopy(self.renderer, hint_texture, null, &hint_rect);
+
+        for (0..4) |row_idx| {
+            for (0..4) |col_idx| {
+                const cell = tetromino.shape[tetromino.rotation][row_idx][col_idx];
+                if (cell != Color.empty) {
+                    const color = getRGB(cell);
+                    const rect = sdl.SDL_Rect{ .x = @intCast((hint_pos.y + col_idx) * cell_width), .y = @intCast((hint_pos.x + row_idx) * cell_height), .w = @intCast(cell_width), .h = @intCast(cell_height) };
+                    _ = sdl.SDL_SetRenderDrawColor(self.renderer, color.r, color.g, color.b, 255);
+                    _ = sdl.SDL_RenderFillRect(self.renderer, &rect);
+                }
+            }
+        }
+    }
+
+    pub fn clearNextTetrominoHint(self: *Renderer) void {
+        for (0..4) |row_idx| {
+            for (0..4) |col_idx| {
+                const rect = sdl.SDL_Rect{ .x = @intCast((hint_pos.y + col_idx) * cell_width), .y = @intCast((hint_pos.x + row_idx) * cell_height), .w = @intCast(cell_width), .h = @intCast(cell_height) };
+                _ = sdl.SDL_SetRenderDrawColor(self.renderer, 0, 0, 0, 255);
+                _ = sdl.SDL_RenderFillRect(self.renderer, &rect);
+            }
+        }
+    }
+
+    pub fn clearInfo(self: *Renderer) void {
+        const info_text_pos_start = Position{ .x = hint_label_pos.x, .y = hint_label_pos.y + 5 };
+        const info_text_rect = sdl.SDL_Rect{ .x = @intCast((info_text_pos_start.y) * cell_width), .y = @intCast((info_text_pos_start.x) * cell_height), .w = @intCast(cell_width * 4 * 12), .h = @intCast(cell_height * 2 * 2) };
+        _ = sdl.SDL_SetRenderDrawColor(self.renderer, 0, 0, 0, 255);
+        _ = sdl.SDL_RenderFillRect(self.renderer, &info_text_rect);
+    }
+
+    pub fn drawLevelAndScore(self: *Renderer, level: u32, score: u32) void {
+        const level_color = getRGB(Color.white);
+        const level_text = concat2(self.arena.allocator(), "Level: ", u32ToString(level, self.arena.allocator()));
+        const info_text_pos_start = Position{ .x = hint_label_pos.x, .y = hint_label_pos.y + 5 };
+        const level_text_rect = sdl.SDL_Rect{ .x = @intCast((info_text_pos_start.y) * cell_width), .y = @intCast((info_text_pos_start.x) * cell_height), .w = @intCast(cell_width * 4), .h = @intCast(cell_height) };
+        const rendered_level_text = sdl.TTF_RenderText_Solid(self.font, level_text.ptr, sdl.SDL_Color{ .r = level_color.r, .g = level_color.g, .b = level_color.b, .a = 255 }) orelse {
+            std.log.err("Failed to render text: {*}\n", .{sdl.SDL_GetError()});
+            return;
+        };
+
+        const level_texture = sdl.SDL_CreateTextureFromSurface(self.renderer, rendered_level_text) orelse {
+            std.log.err("Failed to create texture: {*}\n", .{sdl.SDL_GetError()});
+            return;
+        };
+
+        _ = sdl.SDL_RenderCopy(self.renderer, level_texture, null, &level_text_rect);
+
+        const score_color = getRGB(Color.white);
+        const score_text = "Score: ";
+        const score_value = u32ToString(score, self.arena.allocator());
+        const score_text_rect = sdl.SDL_Rect{ .x = @intCast((info_text_pos_start.y) * cell_width), .y = @intCast((info_text_pos_start.x + 2) * cell_height), .w = @intCast(cell_width * 4), .h = @intCast(cell_height) };
+        const rendered_score_text = sdl.TTF_RenderText_Solid(self.font, score_text.ptr, sdl.SDL_Color{ .r = score_color.r, .g = score_color.g, .b = score_color.b, .a = 255 }) orelse {
+            std.log.err("Failed to render text: {*}\n", .{sdl.SDL_GetError()});
+            return;
+        };
+
+        const score_texture = sdl.SDL_CreateTextureFromSurface(self.renderer, rendered_score_text) orelse {
+            std.log.err("Failed to create texture: {*}\n", .{sdl.SDL_GetError()});
+            return;
+        };
+
+        _ = sdl.SDL_RenderCopy(self.renderer, score_texture, null, &score_text_rect);
+
+        const score_value_rect = sdl.SDL_Rect{ .x = @intCast((info_text_pos_start.y + 6) * cell_width), .y = @intCast((info_text_pos_start.x + 2) * cell_height), .w = @intCast(cell_width * 4), .h = @intCast(cell_height) };
+        const rendered_score_value_text = sdl.TTF_RenderText_Solid(self.font, score_value.ptr, sdl.SDL_Color{ .r = score_color.r, .g = score_color.g, .b = score_color.b, .a = 255 }) orelse {
+            std.log.err("Failed to render text: {*}\n", .{sdl.SDL_GetError()});
+            return;
+        };
+
+        const score_value_texture = sdl.SDL_CreateTextureFromSurface(self.renderer, rendered_score_value_text) orelse {
+            std.log.err("Failed to create texture: {*}\n", .{sdl.SDL_GetError()});
+            return;
+        };
+
+        _ = sdl.SDL_RenderCopy(self.renderer, score_value_texture, null, &score_value_rect);
+    }
+
     pub fn render(self: *Renderer) void {
         sdl.SDL_RenderPresent(self.renderer);
     }
 
     pub fn destroy(self: *Renderer) void {
+        self.arena.deinit();
         sdl.SDL_DestroyRenderer(self.renderer);
         sdl.SDL_DestroyWindow(self.window);
         sdl.SDL_Quit();
@@ -530,7 +651,7 @@ const Game = struct {
     pub fn init(self: *Game) void {
         self.state.init();
         self.board.clear();
-        self.renderer.init(true);
+        self.renderer.init(DebugMode);
         self.timer_id = sdl.SDL_AddTimer(TimerInterval, timerCallback, null);
     }
 
@@ -546,6 +667,10 @@ const Game = struct {
                 self.registerInputs();
                 self.renderer.drawBoard(self.board);
                 self.renderer.drawTetromino(self.state.current_tetromino);
+                self.renderer.clearNextTetrominoHint();
+                self.renderer.drawNextTetrominoHint(self.state.next_tetromino);
+                self.renderer.clearInfo();
+                self.renderer.drawLevelAndScore(self.state.level, self.state.score);
                 self.renderer.render();
                 self.handleInput();
             }
@@ -576,12 +701,13 @@ const Game = struct {
                     if (!self.board.canPutTetromino(self.state.current_tetromino)) {
                         std.log.debug("Can't move the current tetromino down. Landing it.", .{});
                         self.state.current_tetromino.pos.x -= 1;
-                        self.board.landTetromino(self.state.current_tetromino);
+                        const lines_cleared = self.board.landTetromino(self.state.current_tetromino);
                         self.state.current_tetromino = self.state.next_tetromino;
                         self.state.next_tetromino = self.state.generateTetromino();
                         if (!self.board.canPutTetromino(self.state.current_tetromino)) {
                             self.state.gameover();
                         }
+                        self.state.updateScore(lines_cleared);
                     }
                 },
                 else => {},
@@ -617,12 +743,13 @@ const Game = struct {
             if (!self.board.canPutTetromino(self.state.current_tetromino)) {
                 std.log.debug("Can't move the current tetromino down. Landing it.", .{});
                 self.state.current_tetromino.pos.x -= 1;
-                self.board.landTetromino(self.state.current_tetromino);
+                const lines_cleared = self.board.landTetromino(self.state.current_tetromino);
                 self.state.current_tetromino = self.state.next_tetromino;
                 self.state.next_tetromino = self.state.generateTetromino();
                 if (!self.board.canPutTetromino(self.state.current_tetromino)) {
                     self.state.gameover();
                 }
+                self.state.updateScore(lines_cleared);
             }
             self.state.keys.put(sdl.SDLK_DOWN, false) catch @panic("Out of memory");
         }
