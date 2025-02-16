@@ -588,7 +588,7 @@ const Renderer = struct {
             return;
         };
 
-        const text_rect = sdl.SDL_Rect{ .x = 150, .y = 150, .w = 300, .h = 300 };
+        const text_rect = sdl.SDL_Rect{ .x = 150, .y = 150, .w = 250, .h = 300 };
         _ = sdl.SDL_RenderCopy(self.renderer, texture, null, &text_rect);
         self.render();
 
