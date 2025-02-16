@@ -93,8 +93,8 @@ const GameState = struct {
 
     fn generateTetromino(self: *GameState) Tetromino {
         const rand = std.crypto.random;
-        // const types = [_]TetrominoType{ TetrominoType.I, TetrominoType.J, TetrominoType.L, TetrominoType.O, TetrominoType.S, TetrominoType.T, TetrominoType.Z };
-        const types = [_]TetrominoType{TetrominoType.I};
+        const types = [_]TetrominoType{ TetrominoType.I, TetrominoType.J, TetrominoType.L, TetrominoType.O, TetrominoType.S, TetrominoType.T, TetrominoType.Z };
+        // const types = [_]TetrominoType{TetrominoType.I};
         const randIndex = rand.intRangeAtMost(usize, 0, types.len - 1);
         const ttype = types[randIndex];
         const pos = getDefaultTetrominoPosition(self);
@@ -457,7 +457,10 @@ const Renderer = struct {
     window: *sdl.SDL_Window = undefined,
     debug: bool = false,
     arena: std.heap.ArenaAllocator = undefined,
+    fba: std.heap.FixedBufferAllocator = undefined,
     font: *sdl.TTF_Font = undefined,
+
+    level_text: [10]u8 = undefined,
 
     const cell_width = 25;
     const cell_height = 25;
@@ -505,6 +508,9 @@ const Renderer = struct {
             std.log.err("Failed to load font: {*}\n", .{sdl.SDL_GetError()});
             @panic("Failed to load font");
         };
+
+        const level = 0;
+        _ = std.fmt.bufPrint(&self.level_text, "Level: {}", .{level}) catch @panic("Out of memory");
 
         self.debug = debug;
     }
@@ -595,6 +601,11 @@ const Renderer = struct {
                 }
             }
         }
+
+        self.render();
+
+        _ = sdl.SDL_DestroyTexture(hint_texture);
+        _ = sdl.SDL_FreeSurface(rendered_hint_text);
     }
 
     pub fn clearNextTetrominoHint(self: *Renderer) void {
@@ -616,10 +627,10 @@ const Renderer = struct {
 
     pub fn drawLevelAndScore(self: *Renderer, level: u32, score: u32) void {
         const level_color = getRGB(Color.white);
-        const level_text = concat2(self.arena.allocator(), "Level: ", u32ToString(level, self.arena.allocator()));
+        const level_str = std.fmt.bufPrint(&self.level_text, "Level: {}", .{level}) catch @panic("Out of memory");
         const info_text_pos_start = Position{ .x = hint_label_pos.x, .y = hint_label_pos.y + 5 };
         const level_text_rect = sdl.SDL_Rect{ .x = @intCast((info_text_pos_start.y) * cell_width), .y = @intCast((info_text_pos_start.x) * cell_height), .w = @intCast(cell_width * 4), .h = @intCast(cell_height) };
-        const rendered_level_text = sdl.TTF_RenderText_Solid(self.font, level_text.ptr, sdl.SDL_Color{ .r = level_color.r, .g = level_color.g, .b = level_color.b, .a = 255 }) orelse {
+        const rendered_level_text = sdl.TTF_RenderText_Solid(self.font, level_str.ptr, sdl.SDL_Color{ .r = level_color.r, .g = level_color.g, .b = level_color.b, .a = 255 }) orelse {
             std.log.err("Failed to render text: {*}\n", .{sdl.SDL_GetError()});
             return;
         };
@@ -634,6 +645,7 @@ const Renderer = struct {
         const score_color = getRGB(Color.white);
         const score_text = "Score: ";
         const score_value = u32ToString(score, self.arena.allocator());
+        defer self.arena.allocator().free(score_value);
         const score_text_rect = sdl.SDL_Rect{ .x = @intCast((info_text_pos_start.y) * cell_width), .y = @intCast((info_text_pos_start.x + 2) * cell_height), .w = @intCast(cell_width * 4), .h = @intCast(cell_height) };
         const rendered_score_text = sdl.TTF_RenderText_Solid(self.font, score_text.ptr, sdl.SDL_Color{ .r = score_color.r, .g = score_color.g, .b = score_color.b, .a = 255 }) orelse {
             std.log.err("Failed to render text: {*}\n", .{sdl.SDL_GetError()});
@@ -659,6 +671,15 @@ const Renderer = struct {
         };
 
         _ = sdl.SDL_RenderCopy(self.renderer, score_value_texture, null, &score_value_rect);
+
+        self.render();
+
+        _ = sdl.SDL_DestroyTexture(level_texture);
+        _ = sdl.SDL_FreeSurface(rendered_level_text);
+        _ = sdl.SDL_DestroyTexture(score_texture);
+        _ = sdl.SDL_FreeSurface(rendered_score_text);
+        _ = sdl.SDL_DestroyTexture(score_value_texture);
+        _ = sdl.SDL_FreeSurface(rendered_score_value_text);
     }
 
     pub fn render(self: *Renderer) void {
@@ -708,6 +729,7 @@ const Game = struct {
                 self.handleInput();
             }
         }
+        self.renderer.destroy();
     }
 
     fn registerInputs(self: *Game) void {
