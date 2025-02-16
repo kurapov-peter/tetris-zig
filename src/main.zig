@@ -93,7 +93,8 @@ const GameState = struct {
 
     fn generateTetromino(self: *GameState) Tetromino {
         const rand = std.crypto.random;
-        const types = [_]TetrominoType{ TetrominoType.I, TetrominoType.J, TetrominoType.L, TetrominoType.O, TetrominoType.S, TetrominoType.T, TetrominoType.Z };
+        // const types = [_]TetrominoType{ TetrominoType.I, TetrominoType.J, TetrominoType.L, TetrominoType.O, TetrominoType.S, TetrominoType.T, TetrominoType.Z };
+        const types = [_]TetrominoType{TetrominoType.I};
         const randIndex = rand.intRangeAtMost(usize, 0, types.len - 1);
         const ttype = types[randIndex];
         const pos = getDefaultTetrominoPosition(self);
@@ -282,6 +283,13 @@ const Position = struct {
     y: usize,
 };
 
+const Collision = enum {
+    none,
+    left_wall,
+    right_wall,
+    real,
+};
+
 const Board = struct {
     cells: [BoardHeight][BoardWidth]Color,
 
@@ -299,21 +307,41 @@ const Board = struct {
     }
 
     pub fn canPutTetromino(self: *Board, tetromino: Tetromino) bool {
+        return self.collides(tetromino) == Collision.none;
+    }
+
+    pub fn collidesWithLeftWall(self: *Board, tetromino: Tetromino) bool {
+        return self.collides(tetromino) == Collision.left_wall;
+    }
+
+    pub fn collidesWithRightWall(self: *Board, tetromino: Tetromino) bool {
+        return self.collides(tetromino) == Collision.right_wall;
+    }
+
+    pub fn clear(self: *Board) void {
+        self._clear(true);
+    }
+
+    fn collides(self: *Board, tetromino: Tetromino) Collision {
         for (0..4) |row_idx| {
             for (0..4) |col_idx| {
                 const x = tetromino.pos.x + row_idx;
                 const y = tetromino.pos.y + col_idx;
                 const pos: Position = .{ .x = x, .y = y };
-                if (tetromino.shape[tetromino.rotation][row_idx][col_idx] != Color.empty and !isCellEmpty(self, pos)) {
-                    return false;
+                if (tetromino.shape[tetromino.rotation][row_idx][col_idx] != Color.empty) {
+                    if (self.isLeftWallCell(pos)) {
+                        return Collision.left_wall;
+                    }
+                    if (self.isRightWallCell(pos)) {
+                        return Collision.right_wall;
+                    }
+                    if (!isCellEmpty(self, pos)) {
+                        return Collision.real;
+                    }
                 }
             }
         }
-        return true;
-    }
-
-    pub fn clear(self: *Board) void {
-        self._clear(true);
+        return Collision.none;
     }
 
     fn _clear(self: *Board, clearVisible: bool) void {
@@ -332,12 +360,20 @@ const Board = struct {
         }
     }
 
-    pub fn isCellInvisible(_: *const Board, pos: Position) bool {
-        return pos.x < InvisibleCols or pos.x >= BoardHeight - InvisibleRows or pos.y < InvisibleRows or pos.y >= BoardWidth - InvisibleRows;
+    pub fn isCellInvisible(self: *const Board, pos: Position) bool {
+        return pos.x < InvisibleCols or pos.x >= BoardHeight - InvisibleRows or self.isLeftWallCell(pos) or self.isRightWallCell(pos);
     }
 
     pub fn isCellVisible(self: *const Board, pos: Position) bool {
         return !isCellInvisible(self, pos);
+    }
+
+    fn isLeftWallCell(_: *const Board, pos: Position) bool {
+        return pos.y < InvisibleRows;
+    }
+
+    fn isRightWallCell(_: *const Board, pos: Position) bool {
+        return pos.y >= BoardWidth - InvisibleRows;
     }
 
     pub fn dump(self: *const Board, printInvisible: bool) void {
@@ -729,16 +765,16 @@ const Game = struct {
     fn handleInput(self: *Game) void {
         if (self.state.keys.get(sdl.SDLK_LEFT) orelse false) {
             self.state.current_tetromino.left();
-            std.log.info("Trying to move the current tetromino left. Position [{}, {}]", .{ self.state.current_tetromino.pos.x, self.state.current_tetromino.pos.y });
+            std.log.debug("Trying to move the current tetromino left. Position [{}, {}]", .{ self.state.current_tetromino.pos.x, self.state.current_tetromino.pos.y });
             if (!self.board.canPutTetromino(self.state.current_tetromino)) {
                 self.state.current_tetromino.right();
-                std.log.info("Can't move the current tetromino left. Restored position [{}, {}]", .{ self.state.current_tetromino.pos.x, self.state.current_tetromino.pos.y });
+                std.log.debug("Can't move the current tetromino left. Restored position [{}, {}]", .{ self.state.current_tetromino.pos.x, self.state.current_tetromino.pos.y });
             }
             self.state.keys.put(sdl.SDLK_LEFT, false) catch @panic("Out of memory");
         }
         if (self.state.keys.get(sdl.SDLK_RIGHT) orelse false) {
             self.state.current_tetromino.right();
-            std.log.info("Trying to move the current tetromino right. Position [{}, {}]", .{ self.state.current_tetromino.pos.x, self.state.current_tetromino.pos.y });
+            std.log.debug("Trying to move the current tetromino right. Position [{}, {}]", .{ self.state.current_tetromino.pos.x, self.state.current_tetromino.pos.y });
             if (!self.board.canPutTetromino(self.state.current_tetromino)) {
                 self.state.current_tetromino.left();
                 std.log.info("Can't move the current tetromino right. Restored position [{}, {}]", .{ self.state.current_tetromino.pos.x, self.state.current_tetromino.pos.y });
@@ -750,13 +786,74 @@ const Game = struct {
         }
         if (self.state.keys.get(sdl.SDLK_DOWN) orelse false) {
             self.state.current_tetromino.down();
-            std.log.info("Trying to move the current tetromino down. Position [{}, {}]", .{ self.state.current_tetromino.pos.x, self.state.current_tetromino.pos.y });
+            std.log.debug("Trying to move the current tetromino down. Position [{}, {}]", .{ self.state.current_tetromino.pos.x, self.state.current_tetromino.pos.y });
             self.maybeLandTetromino();
             self.state.keys.put(sdl.SDLK_DOWN, false) catch @panic("Out of memory");
         }
         if (self.state.keys.get(sdl.SDLK_UP) orelse false) {
             self.state.current_tetromino.rotate();
-            if (!self.board.canPutTetromino(self.state.current_tetromino)) {
+            if (self.board.collidesWithLeftWall(self.state.current_tetromino)) {
+                // try to move the tetromino to the right
+                self.state.current_tetromino.right();
+                // For the I tetromino, we might need to move it to the left twice
+                // terrible hack, but I can generate all the code with copilot! yay!
+                if (self.state.current_tetromino.type == TetrominoType.I and self.board.collidesWithLeftWall(self.state.current_tetromino)) {
+                    self.state.current_tetromino.right();
+                    if (self.board.canPutTetromino(self.state.current_tetromino)) {
+                        std.log.debug("Moved the current tetromino to the right to rotate it. Position [{}, {}]", .{ self.state.current_tetromino.pos.x, self.state.current_tetromino.pos.y });
+                    } else {
+                        self.state.current_tetromino.left();
+                        self.state.current_tetromino.left();
+                        std.log.debug("Can't move the current tetromino to the right to rotate it. Restored position [{}, {}]", .{ self.state.current_tetromino.pos.x, self.state.current_tetromino.pos.y });
+                        self.state.current_tetromino.rotate();
+                        self.state.current_tetromino.rotate();
+                        self.state.current_tetromino.rotate();
+                    }
+                } else if (self.board.canPutTetromino(self.state.current_tetromino)) {
+                    std.log.debug("Moved the current tetromino to the right to rotate it. Position [{}, {}]", .{ self.state.current_tetromino.pos.x, self.state.current_tetromino.pos.y });
+                } else {
+                    self.state.current_tetromino.left();
+                    std.log.debug("Can't move the current tetromino to the right to rotate it. Restored position [{}, {}]", .{ self.state.current_tetromino.pos.x, self.state.current_tetromino.pos.y });
+                    self.state.current_tetromino.rotate();
+                    self.state.current_tetromino.rotate();
+                    self.state.current_tetromino.rotate();
+                }
+            } else if (self.board.collidesWithRightWall(self.state.current_tetromino)) {
+                // try to move the tetromino to the left
+                self.state.current_tetromino.left();
+                // For the I tetromino, we might need to move it to the right twice
+                // terrible hack, but I can generate all the code with copilot! yay!
+                if (self.state.current_tetromino.type == TetrominoType.I and self.board.collidesWithRightWall(self.state.current_tetromino)) {
+                    self.state.current_tetromino.left();
+                    if (self.board.canPutTetromino(self.state.current_tetromino)) {
+                        std.log.debug("Moved the current tetromino to the left to rotate it. Position [{}, {}]", .{ self.state.current_tetromino.pos.x, self.state.current_tetromino.pos.y });
+                    } else {
+                        self.state.current_tetromino.right();
+                        self.state.current_tetromino.right();
+                        std.log.debug("Can't move the current tetromino to the left to rotate it. Restored position [{}, {}]", .{ self.state.current_tetromino.pos.x, self.state.current_tetromino.pos.y });
+                        self.state.current_tetromino.rotate();
+                        self.state.current_tetromino.rotate();
+                        self.state.current_tetromino.rotate();
+                    }
+                } else if (self.board.canPutTetromino(self.state.current_tetromino)) {
+                    std.log.debug("Moved the current tetromino to the left to rotate it. Position [{}, {}]", .{ self.state.current_tetromino.pos.x, self.state.current_tetromino.pos.y });
+                } else {
+                    self.state.current_tetromino.right();
+                    std.log.debug("Can't move the current tetromino to the left to rotate it. Restored position [{}, {}]", .{ self.state.current_tetromino.pos.x, self.state.current_tetromino.pos.y });
+                    self.state.current_tetromino.rotate();
+                    self.state.current_tetromino.rotate();
+                    self.state.current_tetromino.rotate();
+                }
+                if (self.board.canPutTetromino(self.state.current_tetromino)) {
+                    std.log.debug("Moved the current tetromino to the left to rotate it. Position [{}, {}]", .{ self.state.current_tetromino.pos.x, self.state.current_tetromino.pos.y });
+                } else {
+                    self.state.current_tetromino.right();
+                    std.log.debug("Can't move the current tetromino to the left to rotate it. Restored position [{}, {}]", .{ self.state.current_tetromino.pos.x, self.state.current_tetromino.pos.y });
+                    self.state.current_tetromino.rotate();
+                    self.state.current_tetromino.rotate();
+                    self.state.current_tetromino.rotate();
+                }
+            } else if (!self.board.canPutTetromino(self.state.current_tetromino)) {
                 self.state.current_tetromino.rotate();
                 self.state.current_tetromino.rotate();
                 self.state.current_tetromino.rotate();
