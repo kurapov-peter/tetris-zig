@@ -86,7 +86,8 @@ const GameState = struct {
         if (lines_cleared == 0) return;
         self.lines += lines_cleared;
         self.score += lines_cleared * 100;
-        if (self.lines % 3 == 0 and self.lines != 0 and self.level < 20) {
+        if (self.lines % 5 == 0 and self.lines != 0 and self.level < 20) {
+            // if (self.lines != 0 and self.level < 20) {
             self.level += 1;
         }
     }
@@ -121,6 +122,7 @@ const Color = enum {
     pink,
     red,
     white,
+    dark_blue,
 };
 
 const RGB = struct {
@@ -141,6 +143,7 @@ fn getRGB(color: Color) RGB {
         Color.pink => return .{ .r = 255, .g = 192, .b = 203 },
         Color.red => return .{ .r = 255, .g = 0, .b = 0 },
         Color.white => return .{ .r = 255, .g = 255, .b = 255 },
+        Color.dark_blue => return .{ .r = 0, .g = 0, .b = 102 },
     }
 }
 
@@ -156,6 +159,7 @@ fn colorToInt(color: Color) u32 {
         Color.pink => return 7,
         Color.red => return 8,
         Color.white => return 9,
+        Color.dark_blue => return 10,
     }
 }
 const TetrominoType = enum {
@@ -397,7 +401,7 @@ const Board = struct {
         return local_checksum;
     }
 
-    fn isCellEmpty(self: *Board, pos: Position) bool {
+    fn isCellEmpty(self: *const Board, pos: Position) bool {
         return self.cells[pos.x][pos.y] == Color.empty and isCellVisible(self, pos);
     }
 
@@ -481,7 +485,7 @@ const Renderer = struct {
             return;
         }
 
-        self.window = sdl.SDL_CreateWindow("Tetris", sdl.SDL_WINDOWPOS_CENTERED, sdl.SDL_WINDOWPOS_CENTERED, 1200, 800, sdl.SDL_WINDOW_SHOWN) orelse {
+        self.window = sdl.SDL_CreateWindow("Tetris", sdl.SDL_WINDOWPOS_CENTERED, sdl.SDL_WINDOWPOS_CENTERED, 1000, 600, sdl.SDL_WINDOW_SHOWN) orelse {
             std.log.err("Failed to create window: {*}\n", .{sdl.SDL_GetError()});
             sdl.SDL_Quit();
             return;
@@ -515,9 +519,15 @@ const Renderer = struct {
         self.debug = debug;
     }
 
+    const draw_internal_cells = false;
+
     pub fn drawBoard(self: *Renderer, board: Board) void {
-        const boardColor = getRGB(Color.white);
+        const boardColor = getRGB(Color.empty);
+        const backgroundColor = getRGB(Color.dark_blue); // Use dark blue for background
         const draw_invisible = self.debug;
+
+        _ = sdl.SDL_SetRenderDrawColor(self.renderer, backgroundColor.r, backgroundColor.g, backgroundColor.b, 255);
+        _ = sdl.SDL_RenderClear(self.renderer);
 
         for (0..BoardHeight) |row_idx| {
             for (0..BoardWidth) |col_idx| {
@@ -529,13 +539,23 @@ const Renderer = struct {
                 const rect = sdl.SDL_Rect{ .x = @intCast(col_idx * cell_width), .y = @intCast(row_idx * cell_height), .w = @intCast(cell_width), .h = @intCast(cell_height) };
                 _ = sdl.SDL_SetRenderDrawColor(self.renderer, color.r, color.g, color.b, 255);
                 _ = sdl.SDL_RenderFillRect(self.renderer, &rect);
-                _ = sdl.SDL_SetRenderDrawColor(self.renderer, boardColor.r, boardColor.g, boardColor.b, 255);
-                _ = sdl.SDL_RenderDrawRect(self.renderer, &rect);
+                if (!board.isCellEmpty(.{ .x = row_idx, .y = col_idx }) or draw_internal_cells) {
+                    _ = sdl.SDL_SetRenderDrawColor(self.renderer, boardColor.r, boardColor.g, boardColor.b, 255);
+                    _ = sdl.SDL_RenderDrawRect(self.renderer, &rect);
+                }
             }
         }
     }
 
+    pub fn drawBoardBorder(self: *Renderer) void {
+        const border_color = getRGB(Color.white);
+        const border_rect = sdl.SDL_Rect{ .x = @intCast(InvisibleCols * cell_width), .y = @intCast(InvisibleRows * cell_height), .w = @intCast((BoardWidth - 2 * InvisibleCols) * cell_width), .h = @intCast((BoardHeight - 2 * InvisibleRows) * cell_height) };
+        _ = sdl.SDL_SetRenderDrawColor(self.renderer, border_color.r, border_color.g, border_color.b, 255);
+        _ = sdl.SDL_RenderDrawRect(self.renderer, &border_rect);
+    }
+
     pub fn drawTetromino(self: *Renderer, tetromino: Tetromino) void {
+        const bc = getRGB(Color.empty);
         for (0..4) |row_idx| {
             for (0..4) |col_idx| {
                 const cell = tetromino.shape[tetromino.rotation][row_idx][col_idx];
@@ -544,6 +564,8 @@ const Renderer = struct {
                     const rect = sdl.SDL_Rect{ .x = @intCast((tetromino.pos.y + col_idx) * cell_width), .y = @intCast((tetromino.pos.x + row_idx) * cell_height), .w = @intCast(cell_width), .h = @intCast(cell_height) };
                     _ = sdl.SDL_SetRenderDrawColor(self.renderer, color.r, color.g, color.b, 255);
                     _ = sdl.SDL_RenderFillRect(self.renderer, &rect);
+                    _ = sdl.SDL_SetRenderDrawColor(self.renderer, bc.r, bc.g, bc.b, 255);
+                    _ = sdl.SDL_RenderDrawRect(self.renderer, &rect);
                 }
             }
         }
@@ -590,6 +612,7 @@ const Renderer = struct {
 
         _ = sdl.SDL_RenderCopy(self.renderer, hint_texture, null, &hint_rect);
 
+        const bc = getRGB(Color.empty);
         for (0..4) |row_idx| {
             for (0..4) |col_idx| {
                 const cell = tetromino.shape[tetromino.rotation][row_idx][col_idx];
@@ -598,31 +621,16 @@ const Renderer = struct {
                     const rect = sdl.SDL_Rect{ .x = @intCast((hint_pos.y + col_idx) * cell_width), .y = @intCast((hint_pos.x + row_idx) * cell_height), .w = @intCast(cell_width), .h = @intCast(cell_height) };
                     _ = sdl.SDL_SetRenderDrawColor(self.renderer, color.r, color.g, color.b, 255);
                     _ = sdl.SDL_RenderFillRect(self.renderer, &rect);
+                    _ = sdl.SDL_SetRenderDrawColor(self.renderer, bc.r, bc.g, bc.b, 255);
+                    _ = sdl.SDL_RenderDrawRect(self.renderer, &rect);
                 }
             }
         }
 
-        self.render();
+        // self.render();
 
         _ = sdl.SDL_DestroyTexture(hint_texture);
         _ = sdl.SDL_FreeSurface(rendered_hint_text);
-    }
-
-    pub fn clearNextTetrominoHint(self: *Renderer) void {
-        for (0..4) |row_idx| {
-            for (0..4) |col_idx| {
-                const rect = sdl.SDL_Rect{ .x = @intCast((hint_pos.y + col_idx) * cell_width), .y = @intCast((hint_pos.x + row_idx) * cell_height), .w = @intCast(cell_width), .h = @intCast(cell_height) };
-                _ = sdl.SDL_SetRenderDrawColor(self.renderer, 0, 0, 0, 255);
-                _ = sdl.SDL_RenderFillRect(self.renderer, &rect);
-            }
-        }
-    }
-
-    pub fn clearInfo(self: *Renderer) void {
-        const info_text_pos_start = Position{ .x = hint_label_pos.x, .y = hint_label_pos.y + 5 };
-        const info_text_rect = sdl.SDL_Rect{ .x = @intCast((info_text_pos_start.y) * cell_width), .y = @intCast((info_text_pos_start.x) * cell_height), .w = @intCast(cell_width * 4 * 12), .h = @intCast(cell_height * 2 * 2) };
-        _ = sdl.SDL_SetRenderDrawColor(self.renderer, 0, 0, 0, 255);
-        _ = sdl.SDL_RenderFillRect(self.renderer, &info_text_rect);
     }
 
     pub fn drawLevelAndScore(self: *Renderer, level: u32, score: u32) void {
@@ -694,7 +702,7 @@ const Renderer = struct {
     }
 };
 
-const TimerInterval = 1000; // 1 second
+const TimerInterval = 1000;
 
 const Game = struct {
     state: GameState,
@@ -721,9 +729,8 @@ const Game = struct {
                 self.registerInputs();
                 self.renderer.drawBoard(self.board);
                 self.renderer.drawTetromino(self.state.current_tetromino);
-                self.renderer.clearNextTetrominoHint();
+                self.renderer.drawBoardBorder();
                 self.renderer.drawNextTetrominoHint(self.state.next_tetromino);
-                self.renderer.clearInfo();
                 self.renderer.drawLevelAndScore(self.state.level, self.state.score);
                 self.renderer.render();
                 self.handleInput();
@@ -939,6 +946,10 @@ test "test RGB" {
     try expect(getRGB(Color.white).r == 255);
     try expect(getRGB(Color.white).g == 255);
     try expect(getRGB(Color.white).b == 255);
+
+    try expect(getRGB(Color.dark_blue).r == 0);
+    try expect(getRGB(Color.dark_blue).g == 0);
+    try expect(getRGB(Color.dark_blue).b == 139);
 }
 
 test "Cell visible" {
