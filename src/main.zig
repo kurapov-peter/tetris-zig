@@ -79,24 +79,21 @@ const GameState = struct {
     }
 
     pub fn quit(self: *GameState) void {
-        // defer self.keys.deinit();
-        // defer _ = gpa.deinit();
         self.state = GameStateEnum.quit;
     }
 
     pub fn updateScore(self: *GameState, lines_cleared: u32) void {
+        if (lines_cleared == 0) return;
         self.lines += lines_cleared;
         self.score += lines_cleared * 100;
-        if (self.lines % 100 == 0 and self.lines != 0 and self.level < 20) {
+        if (self.lines % 3 == 0 and self.lines != 0 and self.level < 20) {
             self.level += 1;
         }
     }
 
     fn generateTetromino(self: *GameState) Tetromino {
         const rand = std.crypto.random;
-        // var prng = std.rand.DefaultPrng.init(42);
         const types = [_]TetrominoType{ TetrominoType.I, TetrominoType.J, TetrominoType.L, TetrominoType.O, TetrominoType.S, TetrominoType.T, TetrominoType.Z };
-        // const rand = prng.random();
         const randIndex = rand.intRangeAtMost(usize, 0, types.len - 1);
         const ttype = types[randIndex];
         const pos = getDefaultTetrominoPosition(self);
@@ -331,7 +328,6 @@ const Board = struct {
                 } else {
                     cell.* = Color.red;
                 }
-                std.log.info("set cell at x={}, y={} to value={}", .{ row_idx, col_idx, colorToInt(cell.*) });
             }
         }
     }
@@ -403,6 +399,7 @@ const Board = struct {
         }
 
         self._clear(false);
+        std.log.info("Cleared {} lines", .{lines_cleared});
         return lines_cleared;
     }
 };
@@ -461,16 +458,16 @@ const Renderer = struct {
         self.arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
         const alloc = self.arena.allocator();
 
-        const cwd: []u8 = std.fs.cwd().realpathAlloc(alloc, ".") catch @panic("Out of memory");
-        defer alloc.free(cwd);
+        const tetris_root = std.fs.selfExeDirPathAlloc(alloc) catch @panic("Out of memory");
+        defer alloc.free(tetris_root);
 
-        const paths = &[_][]const u8{ cwd, "assets", "font.ttf" };
+        const paths = &[_][]const u8{ tetris_root, "..", "assets", "font.ttf" };
         const path = std.fs.path.join(alloc, paths) catch @panic("Out of memory");
         std.log.info("path: {s}", .{path});
 
         self.font = sdl.TTF_OpenFont(path.ptr, 24) orelse {
             std.log.err("Failed to load font: {*}\n", .{sdl.SDL_GetError()});
-            return;
+            @panic("Failed to load font");
         };
 
         self.debug = debug;
@@ -698,21 +695,35 @@ const Game = struct {
                     self.state.current_tetromino.down();
                     std.log.debug("Event tick to move down", .{});
                     // If we cannot move the tetromino down, we land it and generate a new one.
-                    if (!self.board.canPutTetromino(self.state.current_tetromino)) {
-                        std.log.debug("Can't move the current tetromino down. Landing it.", .{});
-                        self.state.current_tetromino.pos.x -= 1;
-                        const lines_cleared = self.board.landTetromino(self.state.current_tetromino);
-                        self.state.current_tetromino = self.state.next_tetromino;
-                        self.state.next_tetromino = self.state.generateTetromino();
-                        if (!self.board.canPutTetromino(self.state.current_tetromino)) {
-                            self.state.gameover();
-                        }
-                        self.state.updateScore(lines_cleared);
-                    }
+                    self.maybeLandTetromino();
                 },
                 else => {},
             }
         }
+    }
+
+    fn maybeLandTetromino(self: *Game) void {
+        if (!self.board.canPutTetromino(self.state.current_tetromino)) {
+            std.log.debug("Can't move the current tetromino down. Landing it.", .{});
+            self.state.current_tetromino.pos.x -= 1;
+            const lines_cleared = self.board.landTetromino(self.state.current_tetromino);
+            self.state.current_tetromino = self.state.next_tetromino;
+            self.state.next_tetromino = self.state.generateTetromino();
+            if (!self.board.canPutTetromino(self.state.current_tetromino)) {
+                self.state.gameover();
+            }
+            self.state.updateScore(lines_cleared);
+            self.updateTimer();
+        }
+    }
+
+    fn getTimerValueFromLevel(self: *Game) u32 {
+        return TimerInterval - (self.state.level * 45);
+    }
+
+    fn updateTimer(self: *Game) void {
+        _ = sdl.SDL_RemoveTimer(self.timer_id);
+        self.timer_id = sdl.SDL_AddTimer(self.getTimerValueFromLevel(), timerCallback, null);
     }
 
     fn handleInput(self: *Game) void {
@@ -740,17 +751,7 @@ const Game = struct {
         if (self.state.keys.get(sdl.SDLK_DOWN) orelse false) {
             self.state.current_tetromino.down();
             std.log.info("Trying to move the current tetromino down. Position [{}, {}]", .{ self.state.current_tetromino.pos.x, self.state.current_tetromino.pos.y });
-            if (!self.board.canPutTetromino(self.state.current_tetromino)) {
-                std.log.debug("Can't move the current tetromino down. Landing it.", .{});
-                self.state.current_tetromino.pos.x -= 1;
-                const lines_cleared = self.board.landTetromino(self.state.current_tetromino);
-                self.state.current_tetromino = self.state.next_tetromino;
-                self.state.next_tetromino = self.state.generateTetromino();
-                if (!self.board.canPutTetromino(self.state.current_tetromino)) {
-                    self.state.gameover();
-                }
-                self.state.updateScore(lines_cleared);
-            }
+            self.maybeLandTetromino();
             self.state.keys.put(sdl.SDLK_DOWN, false) catch @panic("Out of memory");
         }
         if (self.state.keys.get(sdl.SDLK_UP) orelse false) {
